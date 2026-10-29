@@ -1,0 +1,109 @@
+# kube-compare user config - WORKED EXAMPLE, telco hub cluster, OCP 4.20
+# Reference: $CC_REF/hub/4.20/reference-crs-kube-compare
+#
+# Pass with:  oc cluster-compare -r <ref>/metadata.yaml -c <this file> -f "$SCOPE" -R
+#
+# ---------------------------------------------------------------------------
+# WHY THIS FILE EXISTS
+# ---------------------------------------------------------------------------
+# kube-compare correlates a cluster CR to a reference template on the exact
+# 4-tuple  <apiVersion>_<kind>_<namespace>_<name>.  There is NO fallback to
+# group+kind+namespace.  So whenever the cluster object carries a different
+# metadata.name than the reference template - even though it is unambiguously
+# the same object doing the same job - the result is a double false positive:
+#
+#   * the reference template is reported under "Missing CRs", and
+#   * the real cluster CR is dropped from the report entirely
+#     (in local/must-gather mode uncorrelated CRs are only listed when -A is
+#     passed; without -A they are silently discarded).
+#
+# Every pair below maps a cluster CR that demonstrably exists to the template
+# that describes it.  Only unambiguous cases are mapped - see the notes.
+#
+# ---------------------------------------------------------------------------
+# HOW TO ADAPT THIS FILE
+# ---------------------------------------------------------------------------
+# The *classes* of mismatch below recur on every telco hub.  The *names* do
+# not - OperatorGroup suffixes are random per-install, and catalog / CA /
+# mirror-config names are site conventions.  Re-derive each one against your
+# own must-gather before using it:
+#
+#   # OperatorGroup names (one per namespace)
+#   ls <gather>/namespaces/<ns>/operators.coreos.com/operatorgroups/
+#   # CatalogSources
+#   ls <gather>/namespaces/openshift-marketplace/operators.coreos.com/catalogsources/
+#   # Subscriptions
+#   ls <gather>/namespaces/*/operators.coreos.com/subscriptions/
+#
+# A correct pair produces a TINY diff - just the name line.  A large
+# unexpected diff means you mapped the wrong object; back it out.
+# ---------------------------------------------------------------------------
+
+correlationSettings:
+  manualCorrelation:
+    correlationPairs:
+
+      # --- Subscriptions -------------------------------------------------
+      # Both are the RDS-sanctioned operator, subscribed from the right
+      # package; only metadata.name differs from the reference convention.
+      # Confirm by checking spec.name (the package) against the reference.
+      #
+      # Reference name: open-cluster-management-subscription
+      # Cluster name:   advanced-cluster-management (spec.name matches)
+      operators.coreos.com/v1alpha1_Subscription_open-cluster-management_advanced-cluster-management: "required/acm/acmSubscription.yaml"
+      # Reference name: openshift-topology-aware-lifecycle-manager-subscription
+      # Cluster name:   topology-aware-lifecycle-manager (spec.name matches)
+      operators.coreos.com/v1alpha1_Subscription_openshift-operators_topology-aware-lifecycle-manager: "required/talm/talmSubscription.yaml"
+
+      # --- OperatorGroups ------------------------------------------------
+      # OLM generates OperatorGroup names as <namespace>-<5 random chars> when
+      # the group is created by the console/OLM rather than by GitOps. Each of
+      # these namespaces holds exactly one OperatorGroup, so the mapping is
+      # unambiguous.  THESE SUFFIXES ARE INSTALL-SPECIFIC - re-derive them.
+      operators.coreos.com/v1_OperatorGroup_open-cluster-management_open-cluster-management-v9ctf: "required/acm/acmOperGroup.yaml"
+      operators.coreos.com/v1_OperatorGroup_openshift-gitops-operator_openshift-gitops-operator-cfp5q: "required/gitops/gitopsOperatorGroup.yaml"
+      operators.coreos.com/v1_OperatorGroup_openshift-logging_openshift-logging-nd2k4: "optional/logging/clusterLogOperGroup.yaml"
+      operators.coreos.com/v1_OperatorGroup_openshift-local-storage_openshift-local-storage-zbwhv: "optional/lso/lsoOperatorGroup.yaml"
+      operators.coreos.com/v1_OperatorGroup_openshift-storage_openshift-storage-7b9qx: "optional/odf-internal/odfOperatorGroup.yaml"
+
+      # --- CatalogSources ------------------------------------------------
+      # The reference hardcodes the name "redhat-operators-disconnected".
+      # This cluster uses oc-mirror v2 naming, and runs two Red Hat index
+      # catalogs (one served from the hub registry, one from a bastion).
+      # Multiple CRs MAY map to the same template.
+      # The community catalogs are deliberately NOT mapped - the reference
+      # does not describe them.
+      operators.coreos.com/v1alpha1_CatalogSource_openshift-marketplace_cs-redhat-operator-index-v4-20-hub: "required/registry/catalog-source.yaml"
+      operators.coreos.com/v1alpha1_CatalogSource_openshift-marketplace_cs-redhat-operator-index-v4-20-bastion: "required/registry/catalog-source.yaml"
+
+      # --- Registry CA ConfigMap -----------------------------------------
+      # The reference expects the trust bundle in configmap "registry-ca".
+      # This cluster calls it "custom-ca" - and Image/cluster really does point
+      # at it (spec.additionalTrustedCA.name: custom-ca), so it is the same
+      # object serving the same purpose under a different name.
+      v1_ConfigMap_openshift-config_custom-ca: "required/registry/registry-ca.yaml"
+
+      # --- Release ImageDigestMirrorSet ----------------------------------
+      # Reference name: idms-release-0.  This cluster's release-image IDMS is
+      # named "image-digest-mirror"; its spec mirrors
+      # quay.io/openshift-release-dev/{ocp-release,ocp-v4.0-art-dev}, which is
+      # precisely what idms-release.yaml describes.
+      config.openshift.io/v1_ImageDigestMirrorSet_image-digest-mirror: "required/registry/idms-release.yaml"
+
+      # --- Assisted-installer mirror registry ConfigMap -------------------
+      # Reference name: mirror-registry-config (ns multicluster-engine).
+      # This cluster's is "assisted-installer-mirror-config" in the same
+      # namespace, carries the same  app: assisted-service  label and the same
+      # data keys (ca-bundle.crt, registries.conf), and AgentServiceConfig
+      # .spec.mirrorRegistryRef.name points straight at it.
+      v1_ConfigMap_multicluster-engine_assisted-installer-mirror-config: "required/acm/acmMirrorRegistryCM.yaml"
+
+# ---------------------------------------------------------------------------
+# DELIBERATELY NOT MAPPED - these are real findings, not naming artifacts
+# ---------------------------------------------------------------------------
+#  * Argo AppProject "draproject" is NOT the reference's "infra".
+#    Different GitOps structure -> report it.
+#  * LSO LocalVolumeSet is NOT LocalVolume.  Different *kind*; correlation
+#    cannot bridge it and shouldn't.  Genuine architectural deviation.
+#  * The logging "collector" ServiceAccount is created BY a
+#    ClusterLogForwarder.  No CLF => no SA.  Report the cause, not the symptom.
